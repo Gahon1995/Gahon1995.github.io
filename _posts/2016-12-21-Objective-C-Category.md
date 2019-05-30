@@ -1,67 +1,64 @@
 ---
-layout:     post
-title:      Objective-C：Category
-subtitle:   深入解析 Category 的实现原理
-date:       2016-12-21
-author:     BY
+layout: post
+title: Objective-C：Category
+subtitle: 深入解析 Category 的实现原理
+date: 2016-12-21
+author: BY
 header-img: img/post-bg-ios9-web.jpg
 catalog: true
 tags:
-    - Category
-    - iOS
-    - ObjC
+  - Category
+  - iOS
+  - ObjC
 ---
 
->本文转载自美图点评技术团队的：[深入理解Objective-C：Category](http://tech.meituan.com/DiveIntoCategory.html)，略有修改。
+> 本文转载自美图点评技术团队的：[深入理解 Objective-C：Category](http://tech.meituan.com/DiveIntoCategory.html)，略有修改。
 
 # 前言
- 
 
-无论一个类设计的多么完美，在未来的需求演进中，都有可能会碰到一些无法预测的情况。那怎么扩展已有的类呢？一般而言，继承和组合是不错的选择。但是在Objective-C 2.0中，又提供了category这个语言特性，可以动态地为已有类添加新行为。如今category已经遍布于Objective-C代码的各个角落，从Apple官方的framework到各个开源框架，从功能繁复的大型APP到简单的应用，catagory无处不在。本文对category做了比较全面的整理，希望对读者有所裨益。
+无论一个类设计的多么完美，在未来的需求演进中，都有可能会碰到一些无法预测的情况。那怎么扩展已有的类呢？一般而言，继承和组合是不错的选择。但是在 Objective-C 2.0 中，又提供了 category 这个语言特性，可以动态地为已有类添加新行为。如今 category 已经遍布于 Objective-C 代码的各个角落，从 Apple 官方的 framework 到各个开源框架，从功能繁复的大型 APP 到简单的应用，catagory 无处不在。本文对 category 做了比较全面的整理，希望对读者有所裨益。
 
 # 简介
- 
-本文系学习Objective-C的runtime源码时整理所成，主要剖析了category在runtime层的实现原理以及和category相关的方方面面，内容包括：
 
-- 初入宝地 category简介
-- 连类比事 category和extension
-- 挑灯细览 category真面目
-- 追本溯源 category如何加载
-- 旁枝末叶 category和+load方法
-- 触类旁通 category和方法覆盖
-- 更上一层 category和关联对象
+本文系学习 Objective-C 的 runtime 源码时整理所成，主要剖析了 category 在 runtime 层的实现原理以及和 category 相关的方方面面，内容包括：
 
-## 初入宝地 Category简介
- 
-Category是Objective-C 2.0之后添加的语言特性，Category的主要作用是为已经存在的类添加方法。除此之外，apple还推荐了Category的另外两个使用场景,详见[Apple Category文档](https://developer.apple.com/library/content/documentation/General/Conceptual/DevPedia-CocoaCore/Category.html)。
+- 初入宝地 category 简介
+- 连类比事 category 和 extension
+- 挑灯细览 category 真面目
+- 追本溯源 category 如何加载
+- 旁枝末叶 category 和+load 方法
+- 触类旁通 category 和方法覆盖
+- 更上一层 category 和关联对象
 
-- 可以把类的实现分开在几个不同的文件里面。这样做有几个显而易见的好处，
-	- 可以减少单个文件的体积 b)可以把不同的功能组织到不同的category里 
-	- 可以由多个开发者共同完成一个类 
-	- 可以按需加载想要的 Category 等等。
+## 初入宝地 Category 简介
+
+Category 是 Objective-C 2.0 之后添加的语言特性，Category 的主要作用是为已经存在的类添加方法。除此之外，apple 还推荐了 Category 的另外两个使用场景,详见[Apple Category 文档](https://developer.apple.com/library/content/documentation/General/Conceptual/DevPedia-CocoaCore/Category.html)。
+
+- 可以把类的实现分开在几个不同的文件里面。这样做有几个显而易见的好处， - 可以减少单个文件的体积 b)可以把不同的功能组织到不同的 category 里 - 可以由多个开发者共同完成一个类 - 可以按需加载想要的 Category 等等。
 - 声明私有方法
 
-不过除了apple推荐的使用场景，广大开发者脑洞大开，还衍生出了category的其他几个使用场景：
+不过除了 apple 推荐的使用场景，广大开发者脑洞大开，还衍生出了 category 的其他几个使用场景：
 
 - 模拟多继承
-- 把framework的私有方法公开
+- 把 framework 的私有方法公开
 
-Objective-C的这个语言特性对于纯动态语言来说可能不算什么，比如javascript，你可以随时为一个“类”或者对象添加任意方法和实例变量。但是对于不是那么“动态”的语言而言，这确实是一个了不起的特性。
+Objective-C 的这个语言特性对于纯动态语言来说可能不算什么，比如 javascript，你可以随时为一个“类”或者对象添加任意方法和实例变量。但是对于不是那么“动态”的语言而言，这确实是一个了不起的特性。
 
-## 连类比事 Category和Extension
- 
-extension看起来很像一个匿名的category，但是extension和有名字的category几乎完全是两个东西。 extension在编译期决议，它就是类的一部分，在编译期和头文件里的@interface以及实现文件里的@implement一起形成一个完整的类，它伴随类的产生而产生，亦随之一起消亡。extension一般用来隐藏类的私有信息，你必须有一个类的源码才能为一个类添加extension，所以你无法为系统的类比如NSString添加extension。(详见[Apple文档](https://developer.apple.com/library/content/documentation/Cocoa/Conceptual/ProgrammingWithObjectiveC/CustomizingExistingClasses/CustomizingExistingClasses.html))
+## 连类比事 Category 和 Extension
 
-## 挑灯细览 category真面目
- 
-我们知道，所有的OC类和对象，在runtime层都是用struct表示的，category也不例外，在runtime层，category用结构体category_t（在objc-runtime-new.h中可以找到此定义），它包含了
+extension 看起来很像一个匿名的 category，但是 extension 和有名字的 category 几乎完全是两个东西。 extension 在编译期决议，它就是类的一部分，在编译期和头文件里的@interface 以及实现文件里的@implement 一起形成一个完整的类，它伴随类的产生而产生，亦随之一起消亡。extension 一般用来隐藏类的私有信息，你必须有一个类的源码才能为一个类添加 extension，所以你无法为系统的类比如 NSString 添加 extension。(详见[Apple 文档](https://developer.apple.com/library/content/documentation/Cocoa/Conceptual/ProgrammingWithObjectiveC/CustomizingExistingClasses/CustomizingExistingClasses.html))
+
+## 挑灯细览 category 真面目
+
+我们知道，所有的 OC 类和对象，在 runtime 层都是用 struct 表示的，category 也不例外，在 runtime 层，category 用结构体 category_t（在 objc-runtime-new.h 中可以找到此定义），它包含了
 
 1. 类的名字（name）
+
 - 类（cls）
-- category中所有给类添加的实例方法的列表（instanceMethods）
-- category中所有添加的类方法的列表（classMethods）
-- category实现的所有协议的列表（protocols）
-- category中添加的所有属性（instanceProperties）
+- category 中所有给类添加的实例方法的列表（instanceMethods）
+- category 中所有添加的类方法的列表（classMethods）
+- category 实现的所有协议的列表（protocols）
+- category 中添加的所有属性（instanceProperties）
 
 ```
 typedef struct category_t {
@@ -73,8 +70,9 @@ typedef struct category_t {
     struct property_list_t *instanceProperties;
 } category_t;
 ```
-从category的定义也可以看出category的可为（可以添加实例方法，类方法，甚至可以实现协议，添加属性）和不可为（无法添加实例变量）。
-ok，我们先去写一个category看一下category到底为何物：
+
+从 category 的定义也可以看出 category 的可为（可以添加实例方法，类方法，甚至可以实现协议，添加属性）和不可为（无法添加实例变量）。
+ok，我们先去写一个 category 看一下 category 到底为何物：
 
 MyClass.h：
 
@@ -95,6 +93,7 @@ MyClass.h：
 
 @end
 ```
+
 MyClass.m：
 
 ```
@@ -119,12 +118,13 @@ MyClass.m：
 @end
 ```
 
-我们使用clang的命令去看看category到底会变成什么：
+我们使用 clang 的命令去看看 category 到底会变成什么：
 
 ```
 clang -rewrite-objc MyClass.m
 ```
-好吧，我们得到了一个3M大小，10w多行的.cpp文件（这绝对是Apple值得吐槽的一点），我们忽略掉所有和我们无关的东西，在文件的最后，我们找到了如下代码片段：
+
+好吧，我们得到了一个 3M 大小，10w 多行的.cpp 文件（这绝对是 Apple 值得吐槽的一点），我们忽略掉所有和我们无关的东西，在文件的最后，我们找到了如下代码片段：
 
 ```
 static struct /*_method_list_t*/ {
@@ -175,19 +175,21 @@ static struct _category_t *L_OBJC_LABEL_CATEGORY_$ [1] __attribute__((used, sect
 &_OBJC_$_CATEGORY_MyClass_$_MyAddition,
 };
 ```
+
 我们可以看到，
 
-1. 首先编译器生成了实例方法列表OBJC$_CATEGORY_INSTANCE_METHODSMyClass$_MyAddition和属性列表OBJC$_PROP_LISTMyClass$_MyAddition，两者的命名都遵循了公共前缀+类名+category名字的命名方式，而且实例方法列表里面填充的正是我们在MyAddition这个category里面写的方法printName，而属性列表里面填充的也正是我们在MyAddition里添加的name属性。还有一个需要注意到的事实就是category的名字用来给各种列表以及后面的category结构体本身命名，而且有static来修饰，所以在同一个编译单元里我们的category名不能重复，否则会出现编译错误。
-- 其次，编译器生成了category本身OBJC$_CATEGORYMyClass$_MyAddition，并用前面生成的列表来初始化category本身。
-- 最后，编译器在DATA段下的objc_catlist section里保存了一个大小为1的category_t的数组L_OBJC_LABELCATEGORY$（当然，如果有多个category，会生成对应长度的数组^_^），用于运行期category的加载。
-到这里，编译器的工作就接近尾声了，对于category在运行期怎么加载，我们下节揭晓。
+1. 首先编译器生成了实例方法列表 OBJC$_CATEGORY_INSTANCE_METHODSMyClass$\_MyAddition 和属性列表 OBJC$_PROP_LISTMyClass$\_MyAddition，两者的命名都遵循了公共前缀+类名+category 名字的命名方式，而且实例方法列表里面填充的正是我们在 MyAddition 这个 category 里面写的方法 printName，而属性列表里面填充的也正是我们在 MyAddition 里添加的 name 属性。还有一个需要注意到的事实就是 category 的名字用来给各种列表以及后面的 category 结构体本身命名，而且有 static 来修饰，所以在同一个编译单元里我们的 category 名不能重复，否则会出现编译错误。
 
-## 追本溯源 category如何加载
+- 其次，编译器生成了 category 本身 OBJC$_CATEGORYMyClass$\_MyAddition，并用前面生成的列表来初始化 category 本身。
+- 最后，编译器在 DATA 段下的 objc*catlist section 里保存了一个大小为 1 的 category_t 的数组 L_OBJC_LABELCATEGORY\$（当然，如果有多个 category，会生成对应长度的数组^*^），用于运行期 category 的加载。
+  到这里，编译器的工作就接近尾声了，对于 category 在运行期怎么加载，我们下节揭晓。
 
-我们知道，Objective-C的运行是依赖OC的runtime的，而OC的runtime和其他系统库一样，是OS X和iOS通过dyld动态加载的。
-想了解更多dyld地同学可以移步[这里](https://www.mikeash.com/pyblog/friday-qa-2012-11-09-dyld-dynamic-linking-on-os-x.html)。
+## 追本溯源 category 如何加载
 
-对于OC运行时，入口方法如下（在objc-os.mm文件中）：
+我们知道，Objective-C 的运行是依赖 OC 的 runtime 的，而 OC 的 runtime 和其他系统库一样，是 OS X 和 iOS 通过 dyld 动态加载的。
+想了解更多 dyld 地同学可以移步[这里](https://www.mikeash.com/pyblog/friday-qa-2012-11-09-dyld-dynamic-linking-on-os-x.html)。
+
+对于 OC 运行时，入口方法如下（在 objc-os.mm 文件中）：
 
 ```
 void _objc_init(void)
@@ -209,10 +211,11 @@ void _objc_init(void)
     dyld_register_image_state_change_handler(dyld_image_state_dependents_initialized, 0/*not batch*/, &load_images);
 }
 ```
-category被附加到类上面是在map_images的时候发生的，在new-ABI的标准下，_objc_init里面的调用的map_images最终会调用objc-runtime-new.mm里面的_read_images方法，而在_read_images方法的结尾，有以下的代码片段：
+
+category 被附加到类上面是在 map_images 的时候发生的，在 new-ABI 的标准下，\_objc_init 里面的调用的 map_images 最终会调用 objc-runtime-new.mm 里面的\_read_images 方法，而在\_read_images 方法的结尾，有以下的代码片段：
 
 ```
-// Discover categories. 
+// Discover categories.
     for (EACH_HEADER) {
         category_t **catlist =
             _getObjc2CategoryList(hi, &count);
@@ -232,12 +235,12 @@ category被附加到类上面是在map_images的时候发生的，在new-ABI的�
                 continue;
             }
 
-            // Process this category. 
-            // First, register the category with its target class. 
-            // Then, rebuild the class's method lists (etc) if 
-            // the class is realized. 
+            // Process this category.
+            // First, register the category with its target class.
+            // Then, rebuild the class's method lists (etc) if
+            // the class is realized.
             BOOL classExists = NO;
-            if (cat->instanceMethods ||  cat->protocols 
+            if (cat->instanceMethods ||  cat->protocols
                 ||  cat->instanceProperties)
             {
                 addUnattachedCategoryForClass(cat, cls, hi);
@@ -252,7 +255,7 @@ category被附加到类上面是在map_images的时候发生的，在new-ABI的�
                 }
             }
 
-            if (cat->classMethods  ||  cat->protocols 
+            if (cat->classMethods  ||  cat->protocols
                 /* ||  cat->classProperties */)
             {
                 addUnattachedCategoryForClass(cat, cls->isa, hi);
@@ -267,16 +270,17 @@ category被附加到类上面是在map_images的时候发生的，在new-ABI的�
         }
     }
 ```
-首先，我们拿到的catlist就是上节中讲到的编译器为我们准备的category_t数组，关于是如何加载catlist本身的，我们暂且不表，这和category本身的关系也不大，有兴趣的同学可以去研究以下Apple的二进制格式和load机制。
 
-略去PrintConnecting这个用于log的东西，这段代码很容易理解：
+首先，我们拿到的 catlist 就是上节中讲到的编译器为我们准备的 category_t 数组，关于是如何加载 catlist 本身的，我们暂且不表，这和 category 本身的关系也不大，有兴趣的同学可以去研究以下 Apple 的二进制格式和 load 机制。
 
-1. 把category的实例方法、协议以及属性添加到类上
-2. 把category的类方法和协议添加到类的metaclass上
+略去 PrintConnecting 这个用于 log 的东西，这段代码很容易理解：
+
+1. 把 category 的实例方法、协议以及属性添加到类上
+2. 把 category 的类方法和协议添加到类的 metaclass 上
 
 值得注意的是，在代码中有一小段注释 `/ || cat->classProperties /`，看来苹果有过给类添加属性的计划啊。
-ok，我们接着往里看，category的各种列表是怎么最终添加到类上的，就拿实例方法列表来说吧：
-在上述的代码片段里，addUnattachedCategoryForClass只是把类和category做一个关联映射，而remethodizeClass才是真正去处理添加事宜的功臣。
+ok，我们接着往里看，category 的各种列表是怎么最终添加到类上的，就拿实例方法列表来说吧：
+在上述的代码片段里，addUnattachedCategoryForClass 只是把类和 category 做一个关联映射，而 remethodizeClass 才是真正去处理添加事宜的功臣。
 
 ```
 static void remethodizeClass(class_t *cls)
@@ -323,10 +327,11 @@ static void remethodizeClass(class_t *cls)
     }
 }
 ```
-而对于添加类的实例方法而言，又会去调用attachCategoryMethods这个方法，我们去看下attachCategoryMethods：
+
+而对于添加类的实例方法而言，又会去调用 attachCategoryMethods 这个方法，我们去看下 attachCategoryMethods：
 
 ```
-static void 
+static void
 attachCategoryMethods(class_t *cls, category_list *cats,
                       BOOL *inoutVtablesAffected)
 {
@@ -356,7 +361,8 @@ attachCategoryMethods(class_t *cls, category_list *cats,
 }
 
 ```
-attachCategoryMethods做的工作相对比较简单，它只是把所有category的实例方法列表拼成了一个大的实例方法列表，然后转交给了attachMethodLists方法（我发誓，这是本节我们看的最后一段代码了^_^），这个方法有点长，我们只看一小段：
+
+attachCategoryMethods 做的工作相对比较简单，它只是把所有 category 的实例方法列表拼成了一个大的实例方法列表，然后转交给了 attachMethodLists 方法（我发誓，这是本节我们看的最后一段代码了^\_^），这个方法有点长，我们只看一小段：
 
 ```
 for (uint32_t m = 0;
@@ -384,24 +390,25 @@ for (uint32_t m = 0;
         newLists[newCount++] = oldLists[i];
     }
 ```
+
 需要注意的有两点：
 
-1. category的方法没有“完全替换掉”原来类已经有的方法，也就是说如果category和原来类都有methodA，那么category附加完成之后，类的方法列表里会有两个methodA
-2. category的方法被放到了新方法列表的前面，而原来类的方法被放到了新方法列表的后面，这也就是我们平常所说的category的方法会“覆盖”掉原来类的同名方法，这是因为运行时在查找方法的时候是顺着方法列表的顺序查找的，它只要一找到对应名字的方法，就会罢休^_^，殊不知后面可能还有一样名字的方法。
+1. category 的方法没有“完全替换掉”原来类已经有的方法，也就是说如果 category 和原来类都有 methodA，那么 category 附加完成之后，类的方法列表里会有两个 methodA
+2. category 的方法被放到了新方法列表的前面，而原来类的方法被放到了新方法列表的后面，这也就是我们平常所说的 category 的方法会“覆盖”掉原来类的同名方法，这是因为运行时在查找方法的时候是顺着方法列表的顺序查找的，它只要一找到对应名字的方法，就会罢休^\_^，殊不知后面可能还有一样名字的方法。
 
 ## 旁枝末叶 category 和 +load 方法
 
-我们知道，在类和category中都可以有+load方法，那么有两个问题：
+我们知道，在类和 category 中都可以有+load 方法，那么有两个问题：
 
-1. 在类的+load方法调用的时候，我们可以调用category中声明的方法么？
-2. 这么些个+load方法，调用顺序是咋样的呢？
+1. 在类的+load 方法调用的时候，我们可以调用 category 中声明的方法么？
+2. 这么些个+load 方法，调用顺序是咋样的呢？
 
 鉴于上述几节我们看的代码太多了，对于这两个问题我们先来看一点直观的：
 
 ![](http://tech.meituan.com/img/diveintocategory/project.png)
 
-我们的代码里有MyClass和MyClass的两个category （Category1和Category2），MyClass和两个category都添加了+load方法，并且Category1和Category2都写了MyClass的printName方法。
-在Xcode中点击Edit Scheme，添加如下两个环境变量（可以在执行load方法以及加载category的时候打印log信息，更多的环境变量选项可参见objc-private.h）:
+我们的代码里有 MyClass 和 MyClass 的两个 category （Category1 和 Category2），MyClass 和两个 category 都添加了+load 方法，并且 Category1 和 Category2 都写了 MyClass 的 printName 方法。
+在 Xcode 中点击 Edit Scheme，添加如下两个环境变量（可以在执行 load 方法以及加载 category 的时候打印 log 信息，更多的环境变量选项可参见 objc-private.h）:
 ![](http://tech.meituan.com/img/diveintocategory/environment_vars.png)
 
 运行项目，我们会看到控制台打印很多东西出来，我们只找到我们想要的信息，顺序如下：
@@ -428,13 +435,14 @@ objc[1187]: LOAD: +[MyClass(Category2) load]
 
 所以，对于上面两个问题，答案是很明显的：
 
-1. 可以调用，因为附加category到类的工作会先于+load方法的执行
-- +load的执行顺序是先类，后category，而category的+load执行顺序是根据编译顺序决定的。
-目前的编译顺序是这样的：
+1. 可以调用，因为附加 category 到类的工作会先于+load 方法的执行
+
+- +load 的执行顺序是先类，后 category，而 category 的+load 执行顺序是根据编译顺序决定的。
+  目前的编译顺序是这样的：
 
 ![](http://tech.meituan.com/img/diveintocategory/compile1.png)
 
-我们调整一个Category1和Category2的编译顺序，run。ok，我们可以看到控制台的输出顺序变了：
+我们调整一个 Category1 和 Category2 的编译顺序，run。ok，我们可以看到控制台的输出顺序变了：
 
 ![](http://tech.meituan.com/img/diveintocategory/compile2.png)
 
@@ -458,17 +466,17 @@ objc[1187]: LOAD: +[MyClass(Category2) load]
 objc[1187]: LOAD: +[MyClass(Category1) load]
 ```
 
-虽然对于+load的执行顺序是这样，但是对于“覆盖”掉的方法，则会先找到最后一个编译的category里的对应方法。
+虽然对于+load 的执行顺序是这样，但是对于“覆盖”掉的方法，则会先找到最后一个编译的 category 里的对应方法。
 
-这一节我们只是用很直观的方式得到了问题的答案，有兴趣的同学可以继续去研究一下OC的运行时代码。
+这一节我们只是用很直观的方式得到了问题的答案，有兴趣的同学可以继续去研究一下 OC 的运行时代码。
 
 ## 触类旁通 category 和方法覆盖
 
 鉴于上面几节我们已经把原理都讲了，这一节只有一个问题:
 
-怎么调用到原来类中被category覆盖掉的方法？
+怎么调用到原来类中被 category 覆盖掉的方法？
 
-对于这个问题，我们已经知道category其实并不是完全替换掉原来类的同名方法，只是category在方法列表的前面而已，所以我们只要顺着方法列表找到最后一个对应名字的方法，就可以调用原来类的方法：
+对于这个问题，我们已经知道 category 其实并不是完全替换掉原来类的同名方法，只是 category 在方法列表的前面而已，所以我们只要顺着方法列表找到最后一个对应名字的方法，就可以调用原来类的方法：
 
 ```
 Class currentClass = [MyClass class];
@@ -481,7 +489,7 @@ if (currentClass) {
     SEL lastSel = NULL;
     for (NSInteger i = 0; i < methodCount; i++) {
         Method method = methodList[i];
-        NSString *methodName = [NSString stringWithCString:sel_getName(method_getName(method)) 
+        NSString *methodName = [NSString stringWithCString:sel_getName(method_getName(method))
                                         encoding:NSUTF8StringEncoding];
         if ([@"printName" isEqualToString:methodName]) {
             lastImp = method_getImplementation(method);
@@ -500,7 +508,7 @@ if (currentClass) {
 
 ## 更上一层 category 和关联对象
 
-如上所见，我们知道在category里面是无法为category添加实例变量的。但是我们很多时候需要在category中添加和对象关联的值，这个时候可以求助关联对象来实现。
+如上所见，我们知道在 category 里面是无法为 category 添加实例变量的。但是我们很多时候需要在 category 中添加和对象关联的值，这个时候可以求助关联对象来实现。
 
 MyClass+Category1.h:
 
@@ -545,7 +553,7 @@ MyClass+Category1.m:
 ```
 
 但是关联对象又是存在什么地方呢？ 如何存储？ 对象销毁时候如何处理关联对象呢？
-我们去翻一下runtime的源码，在objc-references.mm文件中有个方法_object_set_associative_reference：
+我们去翻一下 runtime 的源码，在 objc-references.mm 文件中有个方法\_object_set_associative_reference：
 
 ```
 void _object_set_associative_reference(id object, void *key, id value, uintptr_t policy) {
@@ -594,7 +602,7 @@ void _object_set_associative_reference(id object, void *key, id value, uintptr_t
 }
 ```
 
-我们可以看到所有的关联对象都由AssociationsManager管理，而AssociationsManager定义如下：
+我们可以看到所有的关联对象都由 AssociationsManager 管理，而 AssociationsManager 定义如下：
 
 ```
 class AssociationsManager {
@@ -612,11 +620,11 @@ public:
 };
 ```
 
-AssociationsManager里面是由一个静态AssociationsHashMap来存储所有的关联对象的。这相当于把所有对象的关联对象都存在一个全局map里面。而map的的key是这个对象的指针地址（任意两个不同对象的指针地址一定是不同的），而这个map的value又是另外一个AssociationsHashMap，里面保存了关联对象的kv对。
-而在对象的销毁逻辑里面，见objc-runtime-new.mm:
+AssociationsManager 里面是由一个静态 AssociationsHashMap 来存储所有的关联对象的。这相当于把所有对象的关联对象都存在一个全局 map 里面。而 map 的的 key 是这个对象的指针地址（任意两个不同对象的指针地址一定是不同的），而这个 map 的 value 又是另外一个 AssociationsHashMap，里面保存了关联对象的 kv 对。
+而在对象的销毁逻辑里面，见 objc-runtime-new.mm:
 
 ```
-void *objc_destructInstance(id obj) 
+void *objc_destructInstance(id obj)
 {
     if (obj) {
         Class isa_gen = _object_getClass(obj);
@@ -637,9 +645,9 @@ void *objc_destructInstance(id obj)
 }
 ```
 
-嗯，runtime的销毁对象函数objc_destructInstance里面会判断这个对象有没有关联对象，如果有，会调用_object_remove_assocations做关联对象的清理工作。
+嗯，runtime 的销毁对象函数 objc_destructInstance 里面会判断这个对象有没有关联对象，如果有，会调用\_object_remove_assocations 做关联对象的清理工作。
 
 # 后记
 
-正如侯捷先生所讲-“源码面前，了无秘密”，Apple的Cocoa Touch框架虽然并不开源，但是Objective-C的runtime和Core Foundation却是完全开放源码的(在<http://www.opensource.apple.com/tarballs/>可以下载到全部的开源代码)。
-本系列runtime源码学习将会持续更新，意犹未尽的同学可以自行到上述网站下载源码学习。行笔简陋，如有错误，望指正。
+正如侯捷先生所讲-“源码面前，了无秘密”，Apple 的 Cocoa Touch 框架虽然并不开源，但是 Objective-C 的 runtime 和 Core Foundation 却是完全开放源码的(在<http://www.opensource.apple.com/tarballs/>可以下载到全部的开源代码)。
+本系列 runtime 源码学习将会持续更新，意犹未尽的同学可以自行到上述网站下载源码学习。行笔简陋，如有错误，望指正。
